@@ -1,0 +1,135 @@
+name: Deploy to EC2
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "app/**"
+      - "lib/**"
+      - "public/**"
+      - "scripts/**"
+      - "package.json"
+      - "package-lock.json"
+      - "next.config.mjs"
+      - "Dockerfile"
+      - ".github/workflows/deploy-ec2.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-ec2-production
+  cancel-in-progress: true
+
+jobs:
+  build-and-push:
+    name: Build and push to ECR
+    runs-on: ubuntu-latest
+    environment: production
+    permissions:
+      id-token: write
+      contents: read
+    outputs:
+      image_uri: ${{ steps.build.outputs.image_uri }}
+      image_tag: ${{ steps.meta.outputs.image_tag }}
+      ecr_registry: ${{ steps.login-ecr.outputs.registry }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_TO_ASSUME }}
+          aws-region: ${{ vars.AWS_REGION || 'us-east-1' }}
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Compute image tags
+        id: meta
+        run: |
+          echo "image_tag=${GITHUB_SHA}" >> "$GITHUB_OUTPUT"
+
+      - name: Build and push image
+        id: build
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          ECR_REPOSITORY: ${{ vars.ECR_REPOSITORY }}
+          IMAGE_TAG: ${{ steps.meta.outputs.image_tag }}
+        run: |
+          set -euo pipefail
+          IMAGE_URI="$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG"
+          IMAGE_URI_STABLE="$ECR_REGISTRY/$ECR_REPOSITORY:prod"
+
+          docker build -t "$IMAGE_URI" -f Dockerfile .
+          docker tag "$IMAGE_URI" "$IMAGE_URI_STABLE"
+
+          docker push "$IMAGE_URI"
+          docker push "$IMAGE_URI_STABLE"
+
+          echo "image_uri=$IMAGE_URI" >> "$GITHUB_OUTPUT"
+
+  deploy:
+    name: Deploy on EC2
+    runs-on: ubuntu-latest
+    environment: production
+    needs: [build-and-push]
+    permissions:
+      id-token: write
+      contents: read
+
+    steps:
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_TO_ASSUME }}
+          aws-region: ${{ vars.AWS_REGION || 'us-east-1' }}
+
+      - name: Start SSH agent
+        uses: webfactory/ssh-agent@v0.9.0
+        with:
+          ssh-private-key: ${{ secrets.EC2_SSH_KEY }}
+
+      - name: Add host key
+        run: |
+          mkdir -p ~/.ssh
+          ssh-keyscan -p "${{ secrets.EC2_PORT || '22' }}" "${{ secrets.EC2_HOST }}" >> ~/.ssh/known_hosts
+
+      - name: Pull and run on EC2 via SSH
+        env:
+          EC2_HOST: ${{ secrets.EC2_HOST }}
+          EC2_USER: ${{ secrets.EC2_USER }}
+          EC2_PORT: ${{ secrets.EC2_PORT || '22' }}
+          AWS_REGION: ${{ vars.AWS_REGION || 'us-east-1' }}
+          ECR_REGISTRY: ${{ needs.build-and-push.outputs.ecr_registry }}
+          IMAGE_URI: ${{ needs.build-and-push.outputs.image_uri }}
+          CONTAINER_NAME: ${{ vars.APP_CONTAINER_NAME || 'prompit-web' }}
+          ENV_FILE: ${{ secrets.EC2_ENV_FILE || '/opt/prompit/.env.production' }}
+          HOST_PORT: ${{ vars.APP_HOST_PORT || '3001' }}
+        run: |
+          ssh -p "$EC2_PORT" "$EC2_USER@$EC2_HOST" "
+            set -euo pipefail
+            if ! command -v aws >/dev/null 2>&1; then
+              echo 'aws cli not found on EC2 host. Install awscli and attach IAM permissions for ECR pull.'
+              exit 1
+            fi
+
+            aws ecr get-login-password --region '$AWS_REGION' | docker login --username AWS --password-stdin '$ECR_REGISTRY'
+
+            docker pull '$IMAGE_URI'
+
+            if docker ps -a --format '{{.Names}}' | grep -Fxq '$CONTAINER_NAME'; then
+              docker rm -f '$CONTAINER_NAME'
+            fi
+
+            docker run -d \
+              --name '$CONTAINER_NAME' \
+              --restart unless-stopped \
+              --env-file '$ENV_FILE' \
+              -p '$HOST_PORT:3000' \
+              '$IMAGE_URI'
+
+            docker image prune -f
+          "
