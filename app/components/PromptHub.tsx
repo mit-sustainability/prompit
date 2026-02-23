@@ -373,19 +373,7 @@ export function PromptHub() {
   };
 
   const copyPrompt = async (prompt: PromptWithStats) => {
-    if (!user) {
-      setError("Please sign in to copy prompts.");
-      return;
-    }
-
     await navigator.clipboard.writeText(prompt.content);
-    try {
-      await pb.collection("prompt_copies").create({ prompt: prompt.id, user: user.id });
-    } catch (copyError) {
-      setError(copyError instanceof Error ? copyError.message : "Failed to register copy.");
-      return;
-    }
-    await loadPrompts();
   };
 
   const upvotePrompt = async (prompt: PromptWithStats) => {
@@ -410,7 +398,17 @@ export function PromptHub() {
     await loadPrompts();
   };
 
-  const openForkComposer = (prompt: PromptWithStats) => {
+  const echoPrompt = async (prompt: PromptWithStats) => {
+    if (!user) {
+      setError("Please sign in to echo prompts.");
+      return;
+    }
+    try {
+      await pb.collection("prompt_copies").create({ prompt: prompt.id, user: user.id });
+    } catch (echoError) {
+      setError(echoError instanceof Error ? echoError.message : "Failed to register echo.");
+      return;
+    }
     setComposer({
       title: `${prompt.title} (Echo)`,
       category: prompt.category,
@@ -418,6 +416,7 @@ export function PromptHub() {
       forked_from: prompt.id
     });
     setIsComposerOpen(true);
+    await loadPrompts();
   };
 
   const openEditComposer = (prompt: PromptWithStats) => {
@@ -453,7 +452,7 @@ export function PromptHub() {
             </div>
             <div>
               <h1 className="text-3xl font-bold tracking-tight dark:text-slate-50">Prompit</h1>
-              <p className="mt-1 text-sm text-slate-600 dark:text-slate-300">Fanfare for internal AI prompts</p>
+              <p className="mt-1 text-sm text-slate-600 dark:text-slate-300">Internal Prompt Library for the Team</p>
             </div>
           </div>
           <div className="flex flex-wrap items-center gap-2">
@@ -581,7 +580,7 @@ export function PromptHub() {
               className="inline-flex items-center gap-2 rounded-lg bg-coral px-4 py-2 text-sm font-semibold text-white hover:bg-orange-600"
             >
               <Plus className="h-4 w-4" />
-              Sound the Horn
+              Submit new prompt
             </button>
           </section>
 
@@ -631,7 +630,9 @@ export function PromptHub() {
                         Noise
                       </button>
                       <button
-                        onClick={() => openForkComposer(prompt)}
+                        onClick={() => {
+                          void echoPrompt(prompt);
+                        }}
                         className="inline-flex items-center gap-1 rounded-md border border-slate-300 px-2 py-1 text-xs font-medium hover:bg-slate-50 dark:border-slate-600 dark:text-slate-100 dark:hover:bg-slate-800"
                       >
                         <GitFork className="h-3.5 w-3.5" />
