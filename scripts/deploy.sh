@@ -4,7 +4,7 @@ set -euo pipefail
 APP_DIR="/opt/prompit"
 IMAGE_NAME="prompit-web:latest"
 CONTAINER_NAME="prompit-web"
-ENV_FILE=".env.production"
+ENV_FILE=".env.prompit"
 PORT="${PORT:-3001}"
 CONTAINER_PORT="${CONTAINER_PORT:-3001}"
 
@@ -20,6 +20,7 @@ docker run -d \
   --name "$CONTAINER_NAME" \
   --restart unless-stopped \
   --env-file "$ENV_FILE" \
+  -v "$(pwd)/$ENV_FILE:/app/.env:ro" \
   -p "$PORT:$CONTAINER_PORT" \
   "$IMAGE_NAME"
 

@@ -120,7 +120,7 @@ jobs:
           ECR_REGISTRY: ${{ needs.build-and-push.outputs.ecr_registry }}
           IMAGE_URI: ${{ needs.build-and-push.outputs.image_uri }}
           CONTAINER_NAME: ${{ vars.APP_CONTAINER_NAME || 'prompit-web' }}
-          ENV_FILE: ${{ secrets.EC2_ENV_FILE || '/opt/prompit/.env.production' }}
+          ENV_FILE: ${{ secrets.EC2_ENV_FILE || '/opt/prompit/.env.prompit' }}
           HOST_PORT: ${{ vars.APP_HOST_PORT || '3001' }}
           CONTAINER_PORT: ${{ vars.APP_CONTAINER_PORT || '3001' }}
         run: |
@@ -139,12 +139,29 @@ jobs:
               exit 1
             fi
 
-            mkdir -p \"$(dirname '$ENV_FILE')\"
+            ENV_DIR=\"$(dirname '$ENV_FILE')\"
+            if ! mkdir -p \"$ENV_DIR\" 2>/dev/null; then
+              sudo mkdir -p \"$ENV_DIR\"
+              sudo chown \"$(id -u):$(id -g)\" \"$ENV_DIR\"
+            fi
+
+            TMP_ENV_FILE=\"$(mktemp)\"
             aws secretsmanager get-secret-value \
               --region '$AWS_REGION' \
               --secret-id '$APP_ENV_SECRET_ID' \
               --query 'SecretString' \
-              --output text > '$ENV_FILE'
+              --output text > \"$TMP_ENV_FILE\"
+
+            if [ ! -s \"$TMP_ENV_FILE\" ]; then
+              echo 'Retrieved empty SecretString. Check APP_ENV_SECRET_ID and secret value.'
+              rm -f \"$TMP_ENV_FILE\"
+              exit 1
+            fi
+
+            if ! mv \"$TMP_ENV_FILE\" '$ENV_FILE' 2>/dev/null; then
+              sudo mv \"$TMP_ENV_FILE\" '$ENV_FILE'
+              sudo chown \"$(id -u):$(id -g)\" '$ENV_FILE'
+            fi
             chmod 600 '$ENV_FILE'
 
             aws ecr get-login-password --region '$AWS_REGION' | docker login --username AWS --password-stdin '$ECR_REGISTRY'
@@ -159,6 +176,7 @@ jobs:
               --name '$CONTAINER_NAME' \
               --restart unless-stopped \
               --env-file '$ENV_FILE' \
+              -v '$ENV_FILE:/app/.env:ro' \
               -p '$HOST_PORT:$CONTAINER_PORT' \
               '$IMAGE_URI'
 
