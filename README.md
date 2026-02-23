@@ -2,124 +2,120 @@
 
 Internal office hub for sharing and voting on AI prompts.
 
-## MVP scope (minimum usable prototype)
+## MVP scope
 
 Included now:
-- Google OAuth login via Supabase (domain hinting + DB-level company-domain enforcement).
-- Prompt gallery grid with sorting by Noise (upvotes), Newest, and Most Echoed (copies).
-- Real-time fuzzy search across title, content, category, and tags.
-- Prompt card actions: Copy, Noise (one vote per user), Echo (fork into composer).
-- Composer modal with title/category/content, variable detection (`{{variable_name}}`), and max length (4000).
-- Owner-only edit/delete at the RLS policy layer.
+- Auth via PocketBase (`email/password` for local dev, `Google OAuth` for production).
+- Prompt gallery with sorting by Noise (upvotes), Newest, and Most Echoed (copies).
+- Real-time fuzzy search across title/content/category/tags.
+- Prompt card actions: Copy, Noise, Echo, Edit/Delete (owner in UI).
+- Composer modal with variable detection (`{{variable_name}}`) and max length 4000.
 
-Deferred (non-MVP):
-- Rich moderation workflow.
-- Team analytics dashboards.
-- Notification system.
-- Version diff history UI.
+Deferred:
+- Advanced moderation flows
+- Analytics dashboards
+- Notification system
+- Full version history UI
 
 ## Stack
 
-- Frontend: Next.js 14 (App Router), Tailwind CSS, Lucide React
-- Backend/Auth/DB: Self-hosted Supabase (Postgres)
-- Infra: AWS EC2 + Docker, optional S3 for future file assets
+- Frontend: Next.js 15 (App Router), Tailwind CSS, Lucide React
+- Backend/Auth/DB: PocketBase (self-hosted)
+- Infra: AWS EC2 + Docker, ECR + GitHub Actions deploy
 
 ## 1) Local app setup
 
-1. Install dependencies:
+1. Install deps:
 ```bash
 npm install
 ```
-2. Create env file:
+2. Place PocketBase binary in this repo:
 ```bash
-cp .env.example .env.local
+mkdir -p bin pb_data
+# Move your downloaded binary to:
+#   bin/pocketbase
+chmod +x bin/pocketbase
 ```
-3. Fill in:
-- `NEXT_PUBLIC_SUPABASE_URL`
-- `NEXT_PUBLIC_SUPABASE_ANON_KEY`
+3. Create env:
+```bash
+cp .env.example .env
+```
+4. Fill in:
+- `NEXT_PUBLIC_POCKETBASE_URL`
 - `NEXT_PUBLIC_COMPANY_DOMAIN`
-- `NEXT_PUBLIC_AUTH_MODE=email` for local email/password login (set `google` in production)
-4. Run:
+- `NEXT_PUBLIC_AUTH_MODE=email`
+5. Run both PocketBase + Next.js:
 ```bash
 npm run dev
 ```
 
-## 2) Database setup (Supabase)
+## 2) PocketBase setup (minimum required schema)
 
-Apply `supabase/migrations/202602171730_init.sql` in your Supabase Postgres.
+Use the bootstrap script:
 
-Important: set your company domain in Postgres settings:
-```sql
-ALTER SYSTEM SET app.settings.company_domain = 'yourcompany.com';
-```
-Then restart Postgres.
-
-This powers RLS function `public.is_allowed_company_user()`.
-
-## 3) Google OAuth config
-
-In Supabase Auth:
-- Enable Google provider.
-- Add redirect URL: `https://YOUR_APP_DOMAIN/auth/callback`.
-- In Google Cloud OAuth consent/app settings, restrict authorized domain as needed.
-
-App-side OAuth uses `hd=<company_domain>` for domain hinting.
-
-## 4) EC2 deployment (Prompit app only, no compose)
-
-1. Copy project to EC2 (example `/opt/prompit`).
-2. Create runtime env:
 ```bash
-cp .env.production.example .env.production
-# edit values
-```
-3. Build image:
-```bash
-docker build -t prompit-web:latest -f Dockerfile .
-```
-4. Run container:
-```bash
-docker run -d \
-  --name prompit-web \
-  --restart unless-stopped \
-  --env-file .env.production \
-  -p 3000:3000 \
-  prompit-web:latest
-```
-5. For updates, run:
-```bash
-bash scripts/deploy.sh
+POCKETBASE_URL=http://127.0.0.1:8090 \
+POCKETBASE_ADMIN_EMAIL=admin@example.com \
+POCKETBASE_ADMIN_PASSWORD='your-admin-password' \
+COMPANY_DOMAIN=mit.edu \
+bash infra/pocketbase/bootstrap-collections.sh
 ```
 
-## 5) Self-hosted Supabase on EC2
+This creates/updates required collections:
+- `users` (auth collection)
+- `prompts`
+- `prompt_votes`
+- `prompt_copies`
 
-See `infra/supabase/README.md`.
+Recommended PocketBase API rules:
+- `prompts` list/view/create/update/delete: authenticated users only
+- `prompts` update/delete: `author = @request.auth.id`
+- `prompt_votes` create: authenticated users only + unique index prevents duplicate votes
+- `prompt_copies` create: authenticated users only
 
-Use official open-source Supabase self-hosting Docker Compose stack on EC2 and point this app to that URL.
-Keep Supabase as a separate deployment from the Prompit app.
+Optional domain restriction (recommended):
+- Add rule fragments enforcing email domain (example `mit.edu`) in each collection rule:
+  - `@request.auth.email ~ ".+@mit\\.edu$"`
 
-## 6) GitHub Actions CI/CD to EC2
+## 3) Production Google OAuth setup
 
-A scoped deployment workflow is included at `.github/workflows/deploy-ec2.yml`.
+In PocketBase Admin:
+- Enable Google OAuth provider for `users` auth collection.
+- Set app URL/callback as required by PocketBase OAuth settings.
 
-It only auto-deploys on pushes to `main` when app/deploy-relevant files change, and also supports manual deploy via `workflow_dispatch`.
+In Google Cloud OAuth app:
+- Add PocketBase OAuth callback URL from your PocketBase provider setup.
+- Add production app domain (`prompit.yourdomain.com`) to allowed origins where required.
 
-Set these GitHub repository secrets:
+In app runtime env:
+- `NEXT_PUBLIC_AUTH_MODE=google`
+
+## 4) Deploy app on EC2
+
+App deploy is automated via `.github/workflows/deploy-ec2.yml`:
+- Build image in GitHub Actions
+- Push to ECR
+- SSH to EC2, pull image, fetch `.env.production` from AWS Secrets Manager, run container
+
+Container host port defaults to `3001` and maps to app port `3001` inside container.
+
+## 5) Required CI/CD configuration
+
+GitHub secrets:
+- `EC2_SSH_KEY`
 - `EC2_HOST`
-- `EC2_USER`
-- `EC2_SSH_KEY` (private key for SSH auth)
+- Optional: `EC2_PORT`, `EC2_ENV_FILE`
 
-Optional secrets:
-- `EC2_PORT` (defaults to `22`)
-- `EC2_APP_DIR` (defaults to `/opt/prompit`)
+GitHub variables:
+- `AWS_ROLE_TO_ASSUME`
+- `AWS_REGION`
+- `ECR_REPOSITORY`
+- `APP_ENV_SECRET_ID`
+- Optional: `APP_CONTAINER_NAME`, `APP_HOST_PORT`, `APP_CONTAINER_PORT`
 
-Expected EC2 host state:
-- Repo checked out at `/opt/prompit` (or `EC2_APP_DIR`).
-- Docker installed and available to the deployment user.
-- Runtime env file (`.env.production`) present in app dir.
-
-## Notes
-
-- No paid third-party dependencies are required beyond AWS infrastructure.
-- Duplicate upvotes are blocked by primary key `(prompt_id, user_id)`.
-- Owner permissions are enforced by RLS, not just UI.
+AWS Secrets Manager (`APP_ENV_SECRET_ID`) should contain dotenv text:
+```env
+NEXT_PUBLIC_POCKETBASE_URL=https://pocketbase.your-domain.com
+NEXT_PUBLIC_COMPANY_DOMAIN=mit.edu
+NEXT_PUBLIC_AUTH_MODE=google
+```

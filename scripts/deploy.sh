@@ -6,6 +6,7 @@ IMAGE_NAME="prompit-web:latest"
 CONTAINER_NAME="prompit-web"
 ENV_FILE=".env.production"
 PORT="${PORT:-3001}"
+CONTAINER_PORT="${CONTAINER_PORT:-3001}"
 
 cd "$APP_DIR"
 
@@ -19,7 +20,7 @@ docker run -d \
   --name "$CONTAINER_NAME" \
   --restart unless-stopped \
   --env-file "$ENV_FILE" \
-  -p "$PORT:3000" \
+  -p "$PORT:$CONTAINER_PORT" \
   "$IMAGE_NAME"
 
 echo "Prompit deployed on port $PORT."

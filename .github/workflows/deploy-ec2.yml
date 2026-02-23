@@ -37,11 +37,16 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Configure AWS credentials
+      - name: Configure AWS Authentication
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: ${{ secrets.AWS_ROLE_TO_ASSUME }}
+          role-to-assume: ${{ vars.AWS_ROLE_TO_ASSUME }}
           aws-region: ${{ vars.AWS_REGION || 'us-east-1' }}
+          role-session-name: GitHub_to_AWS_via_FederatedOIDC
+
+      - name: Sts GetCallerIdentity
+        run: |
+          aws sts get-caller-identity
 
       - name: Login to Amazon ECR
         id: login-ecr
@@ -60,6 +65,10 @@ jobs:
           IMAGE_TAG: ${{ steps.meta.outputs.image_tag }}
         run: |
           set -euo pipefail
+          if [ -z "${ECR_REPOSITORY:-}" ]; then
+            echo "ECR_REPOSITORY is empty. Set it as a GitHub Actions variable."
+            exit 1
+          fi
           IMAGE_URI="$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG"
           IMAGE_URI_STABLE="$ECR_REGISTRY/$ECR_REPOSITORY:prod"
 
@@ -81,11 +90,16 @@ jobs:
       contents: read
 
     steps:
-      - name: Configure AWS credentials
+      - name: Configure AWS Authentication
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: ${{ secrets.AWS_ROLE_TO_ASSUME }}
+          role-to-assume: ${{ vars.AWS_ROLE_TO_ASSUME }}
           aws-region: ${{ vars.AWS_REGION || 'us-east-1' }}
+          role-session-name: GitHub_to_AWS_via_FederatedOIDC
+
+      - name: Sts GetCallerIdentity
+        run: |
+          aws sts get-caller-identity
 
       - name: Start SSH agent
         uses: webfactory/ssh-agent@v0.9.0
@@ -100,21 +114,38 @@ jobs:
       - name: Pull and run on EC2 via SSH
         env:
           EC2_HOST: ${{ secrets.EC2_HOST }}
-          EC2_USER: ${{ secrets.EC2_USER }}
           EC2_PORT: ${{ secrets.EC2_PORT || '22' }}
           AWS_REGION: ${{ vars.AWS_REGION || 'us-east-1' }}
+          APP_ENV_SECRET_ID: ${{ vars.APP_ENV_SECRET_ID }}
           ECR_REGISTRY: ${{ needs.build-and-push.outputs.ecr_registry }}
           IMAGE_URI: ${{ needs.build-and-push.outputs.image_uri }}
           CONTAINER_NAME: ${{ vars.APP_CONTAINER_NAME || 'prompit-web' }}
           ENV_FILE: ${{ secrets.EC2_ENV_FILE || '/opt/prompit/.env.production' }}
           HOST_PORT: ${{ vars.APP_HOST_PORT || '3001' }}
+          CONTAINER_PORT: ${{ vars.APP_CONTAINER_PORT || '3001' }}
         run: |
-          ssh -p "$EC2_PORT" "$EC2_USER@$EC2_HOST" "
+          ssh -p "$EC2_PORT" "ubuntu@$EC2_HOST" "
             set -euo pipefail
             if ! command -v aws >/dev/null 2>&1; then
               echo 'aws cli not found on EC2 host. Install awscli and attach IAM permissions for ECR pull.'
               exit 1
             fi
+            if [ -z '$APP_ENV_SECRET_ID' ]; then
+              echo 'APP_ENV_SECRET_ID is empty. Set it as a GitHub Actions variable.'
+              exit 1
+            fi
+            if [ -z '$IMAGE_URI' ]; then
+              echo 'IMAGE_URI is empty. Build job did not produce image URI.'
+              exit 1
+            fi
+
+            mkdir -p \"$(dirname '$ENV_FILE')\"
+            aws secretsmanager get-secret-value \
+              --region '$AWS_REGION' \
+              --secret-id '$APP_ENV_SECRET_ID' \
+              --query 'SecretString' \
+              --output text > '$ENV_FILE'
+            chmod 600 '$ENV_FILE'
 
             aws ecr get-login-password --region '$AWS_REGION' | docker login --username AWS --password-stdin '$ECR_REGISTRY'
 
@@ -128,7 +159,7 @@ jobs:
               --name '$CONTAINER_NAME' \
               --restart unless-stopped \
               --env-file '$ENV_FILE' \
-              -p '$HOST_PORT:3000' \
+              -p '$HOST_PORT:$CONTAINER_PORT' \
               '$IMAGE_URI'
 
             docker image prune -f

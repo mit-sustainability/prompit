@@ -17,11 +17,11 @@ import {
   Sun,
   Monitor
 } from "lucide-react";
-import { createClient } from "@/lib/supabase/client";
+import { createClient } from "@/lib/pocketbase/client";
 import { env } from "@/lib/env";
 import type { PromptWithStats } from "@/lib/types";
 import { extractVariables, sortPrompts, type SortKey } from "@/lib/prompt-utils";
-import type { User } from "@supabase/supabase-js";
+import { ClientResponseError, type RecordModel } from "pocketbase";
 
 const MAX_PROMPT_LENGTH = 4000;
 
@@ -68,9 +68,15 @@ function renderVariablePreview(text: string) {
 }
 
 export function PromptHub() {
-  const supabase = useMemo(() => createClient(), []);
-  const [themeMode, setThemeMode] = useState<ThemeMode>("system");
-  const [user, setUser] = useState<User | null>(null);
+  const pb = useMemo(() => createClient(), []);
+  const [themeMode, setThemeMode] = useState<ThemeMode>(() => {
+    if (typeof window === "undefined") {
+      return "system";
+    }
+    const stored = window.localStorage.getItem("theme-mode");
+    return stored === "light" || stored === "dark" || stored === "system" ? stored : "system";
+  });
+  const [user, setUser] = useState<RecordModel | null>(null);
   const [prompts, setPrompts] = useState<PromptWithStats[]>([]);
   const [loading, setLoading] = useState(true);
   const [query, setQuery] = useState("");
@@ -83,46 +89,155 @@ export function PromptHub() {
   const [password, setPassword] = useState("");
   const [authLoading, setAuthLoading] = useState(false);
 
+  const listAllRecords = useCallback(
+    async (collection: string, sort?: string): Promise<RecordModel[]> => {
+      const fetchWithPerPage = async (perPage: number, requestedSort?: string): Promise<RecordModel[]> => {
+        let page = 1;
+        let totalPages = 1;
+        const records: RecordModel[] = [];
+
+        do {
+          const pageResult = await pb.collection(collection).getList(page, perPage, {
+            ...(requestedSort ? { sort: requestedSort } : {})
+          });
+          records.push(...(pageResult.items as RecordModel[]));
+          totalPages = pageResult.totalPages;
+          page += 1;
+        } while (page <= totalPages);
+
+        return records;
+      };
+
+      const pageSizes = [200, 100, 50, 20, 10];
+      let lastError: unknown = null;
+
+      for (const size of pageSizes) {
+        try {
+          return await fetchWithPerPage(size, sort);
+        } catch (error) {
+          lastError = error;
+          if (!(error instanceof ClientResponseError) || error.status !== 400) {
+            throw error;
+          }
+
+          // Some PocketBase setups reject sorting by system fields like `created`.
+          // Fall back to unsorted fetch and let the UI apply sorting.
+          if (sort) {
+            try {
+              return await fetchWithPerPage(size);
+            } catch (fallbackError) {
+              lastError = fallbackError;
+              if (!(fallbackError instanceof ClientResponseError) || fallbackError.status !== 400) {
+                throw fallbackError;
+              }
+            }
+          }
+        }
+      }
+
+      throw lastError ?? new Error("Failed to list records from PocketBase.");
+    },
+    [pb]
+  );
+
   const loadPrompts = useCallback(async () => {
-    const { data, error: loadError } = await supabase.from("prompts_with_stats").select("*").limit(300);
+    try {
+      // Some PocketBase instances reject sorting by system `created`/`updated`.
+      // Use `-id` for stable server-side fetch, then apply UI sort client-side.
+      const promptRecords = await listAllRecords("prompts", "-id");
+      const [votesResult, copiesResult] = await Promise.allSettled([
+        listAllRecords("prompt_votes"),
+        listAllRecords("prompt_copies")
+      ]);
 
-    if (loadError) {
-      setError(loadError.message);
-      return;
+      const voteRecords =
+        votesResult.status === "fulfilled" ? votesResult.value : [];
+      const copyRecords =
+        copiesResult.status === "fulfilled" ? copiesResult.value : [];
+
+      const voteCount = new Map<string, number>();
+      const copyCount = new Map<string, number>();
+
+      voteRecords.forEach((vote: RecordModel) => {
+        const promptId = String(vote.prompt ?? "");
+        if (promptId) {
+          voteCount.set(promptId, (voteCount.get(promptId) ?? 0) + 1);
+        }
+      });
+      copyRecords.forEach((copy: RecordModel) => {
+        const promptId = String(copy.prompt ?? "");
+        if (promptId) {
+          copyCount.set(promptId, (copyCount.get(promptId) ?? 0) + 1);
+        }
+      });
+
+      const mappedPrompts: PromptWithStats[] = promptRecords.map((record: RecordModel) => {
+        return {
+          id: record.id,
+          title: String(record.title ?? ""),
+          content: String(record.content ?? ""),
+          category: String(record.category ?? ""),
+          tags: Array.isArray(record.tags) ? (record.tags as string[]) : [],
+          author_id: String(record.author ?? ""),
+          author_name: record.author_name ? String(record.author_name) : null,
+          forked_from: record.forked_from ? String(record.forked_from) : null,
+          created_at: String(record.created ?? record.created_at ?? ""),
+          updated_at: String(record.updated ?? record.updated_at ?? ""),
+          upvote_count: voteCount.get(record.id) ?? 0,
+          copy_count: copyCount.get(record.id) ?? 0
+        };
+      });
+
+      setPrompts(mappedPrompts);
+      if (votesResult.status === "rejected" || copiesResult.status === "rejected") {
+        setError("Prompt list loaded, but vote/copy stats are temporarily unavailable.");
+      } else {
+        setError(null);
+      }
+    } catch (loadError) {
+      if (loadError instanceof ClientResponseError) {
+        const apiMessage =
+          typeof loadError.response?.message === "string" && loadError.response.message.length > 0
+            ? loadError.response.message
+            : loadError.message;
+        const dataDetails =
+          loadError.response?.data && Object.keys(loadError.response.data).length > 0
+            ? ` (${JSON.stringify(loadError.response.data)})`
+            : "";
+        setError(`${apiMessage}${dataDetails}`);
+      } else {
+        setError(loadError instanceof Error ? loadError.message : "Failed to load prompts.");
+      }
     }
-
-    setPrompts((data as PromptWithStats[]) ?? []);
-  }, [supabase]);
+  }, [listAllRecords]);
 
   useEffect(() => {
     const loadSession = async () => {
       const {
-        data: { user: currentUser }
-      } = await supabase.auth.getUser();
+        model: currentUser
+      } = pb.authStore;
       setUser(currentUser);
-      await loadPrompts();
+      if (currentUser) {
+        await loadPrompts();
+      } else {
+        setPrompts([]);
+      }
       setLoading(false);
     };
 
     loadSession();
 
-    const {
-      data: { subscription }
-    } = supabase.auth.onAuthStateChange((_event, session) => {
-      setUser(session?.user ?? null);
+    const unsubscribe = pb.authStore.onChange((_token: string, model: RecordModel | null) => {
+      setUser(model);
+      if (model) {
+        void loadPrompts();
+      } else {
+        setPrompts([]);
+      }
     });
 
-    return () => subscription.unsubscribe();
-  }, [loadPrompts, supabase]);
-
-  useEffect(() => {
-    const stored = window.localStorage.getItem("theme-mode");
-    if (stored === "light" || stored === "dark" || stored === "system") {
-      setThemeMode(stored);
-      return;
-    }
-    setThemeMode("system");
-  }, []);
+    return () => unsubscribe();
+  }, [loadPrompts, pb]);
 
   useEffect(() => {
     const root = document.documentElement;
@@ -169,16 +284,15 @@ export function PromptHub() {
   const signInWithGoogle = async () => {
     setError(null);
     setAuthLoading(true);
-    const { error: signInError } = await supabase.auth.signInWithOAuth({
-      provider: "google",
-      options: {
-        redirectTo: `${window.location.origin}/auth/callback`,
-        queryParams: env.companyDomain ? { hd: env.companyDomain } : {}
-      }
-    });
-
-    if (signInError) {
-      setError(signInError.message);
+    try {
+      await pb.collection("users").authWithOAuth2({
+        provider: "google"
+      });
+      await loadPrompts();
+      setLoading(false);
+      setAuthLoading(false);
+    } catch (signInError) {
+      setError(signInError instanceof Error ? signInError.message : "Google sign-in failed.");
       setAuthLoading(false);
     }
   };
@@ -192,21 +306,20 @@ export function PromptHub() {
     setError(null);
     setAuthLoading(true);
 
-    const { error: signInError } = await supabase.auth.signInWithPassword({
-      email: email.trim(),
-      password
-    });
-
-    setAuthLoading(false);
-
-    if (signInError) {
-      setError(signInError.message);
+    try {
+      await pb.collection("users").authWithPassword(email.trim(), password);
+      await loadPrompts();
+      setLoading(false);
+      setAuthLoading(false);
+    } catch (signInError) {
+      setAuthLoading(false);
+      setError(signInError instanceof Error ? signInError.message : "Email sign-in failed.");
       return;
     }
   };
 
   const signOut = async () => {
-    await supabase.auth.signOut();
+    pb.authStore.clear();
   };
 
   const submitPrompt = async (event: FormEvent) => {
@@ -237,14 +350,20 @@ export function PromptHub() {
       forked_from: composer.forked_from ?? null
     };
 
-    const response = composer.id
-      ? await supabase.from("prompts").update(payload).eq("id", composer.id)
-      : await supabase.from("prompts").insert({ ...payload, author_id: user.id });
-
-    setSaving(false);
-
-    if (response.error) {
-      setError(response.error.message);
+    try {
+      if (composer.id) {
+        await pb.collection("prompts").update(composer.id, payload);
+      } else {
+        await pb.collection("prompts").create({
+          ...payload,
+          author: user.id,
+          author_name: String(user.email ?? user.id)
+        });
+      }
+      setSaving(false);
+    } catch (submitError) {
+      setSaving(false);
+      setError(submitError instanceof Error ? submitError.message : "Failed to save prompt.");
       return;
     }
 
@@ -260,7 +379,12 @@ export function PromptHub() {
     }
 
     await navigator.clipboard.writeText(prompt.content);
-    await supabase.from("prompt_copies").insert({ prompt_id: prompt.id, user_id: user.id });
+    try {
+      await pb.collection("prompt_copies").create({ prompt: prompt.id, user: user.id });
+    } catch (copyError) {
+      setError(copyError instanceof Error ? copyError.message : "Failed to register copy.");
+      return;
+    }
     await loadPrompts();
   };
 
@@ -270,12 +394,16 @@ export function PromptHub() {
       return;
     }
 
-    const { error: voteError } = await supabase
-      .from("prompt_votes")
-      .insert({ prompt_id: prompt.id, user_id: user.id });
-
-    if (voteError && voteError.code !== "23505") {
-      setError(voteError.message);
+    try {
+      const existingVote = await pb
+        .collection("prompt_votes")
+        .getFirstListItem(`prompt="${prompt.id}" && user="${user.id}"`)
+        .catch(() => null);
+      if (!existingVote) {
+        await pb.collection("prompt_votes").create({ prompt: prompt.id, user: user.id });
+      }
+    } catch (voteError) {
+      setError(voteError instanceof Error ? voteError.message : "Failed to upvote prompt.");
       return;
     }
 
@@ -304,9 +432,10 @@ export function PromptHub() {
   };
 
   const deletePrompt = async (promptId: string) => {
-    const { error: deleteError } = await supabase.from("prompts").delete().eq("id", promptId);
-    if (deleteError) {
-      setError(deleteError.message);
+    try {
+      await pb.collection("prompts").delete(promptId);
+    } catch (deleteError) {
+      setError(deleteError instanceof Error ? deleteError.message : "Failed to delete prompt.");
       return;
     }
     await loadPrompts();
