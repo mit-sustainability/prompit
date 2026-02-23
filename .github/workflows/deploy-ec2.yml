@@ -63,42 +63,25 @@ jobs:
           ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
           ECR_REPOSITORY: ${{ vars.ECR_REPOSITORY }}
           IMAGE_TAG: ${{ steps.meta.outputs.image_tag }}
-          APP_ENV_SECRET_ID: ${{ vars.APP_ENV_SECRET_ID }}
-          AWS_REGION: ${{ vars.AWS_REGION || 'us-east-1' }}
+          NEXT_PUBLIC_POCKETBASE_URL: ${{ vars.NEXT_PUBLIC_POCKETBASE_URL }}
+          NEXT_PUBLIC_PB_URL: ${{ vars.NEXT_PUBLIC_PB_URL }}
+          NEXT_PUBLIC_COMPANY_DOMAIN: ${{ vars.NEXT_PUBLIC_COMPANY_DOMAIN }}
+          NEXT_PUBLIC_AUTH_MODE: ${{ vars.NEXT_PUBLIC_AUTH_MODE || 'google' }}
         run: |
           set -euo pipefail
           if [ -z "${ECR_REPOSITORY:-}" ]; then
             echo "ECR_REPOSITORY is empty. Set it as a GitHub Actions variable."
             exit 1
           fi
-          if [ -z "${APP_ENV_SECRET_ID:-}" ]; then
-            echo "APP_ENV_SECRET_ID is empty. Set it as a GitHub Actions variable."
-            exit 1
-          fi
           IMAGE_URI="$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG"
           IMAGE_URI_STABLE="$ECR_REGISTRY/$ECR_REPOSITORY:prod"
 
-          SECRET_CONTENT="$(aws secretsmanager get-secret-value \
-            --region "$AWS_REGION" \
-            --secret-id "$APP_ENV_SECRET_ID" \
-            --query 'SecretString' \
-            --output text)"
-          if [ -z "$SECRET_CONTENT" ] || [ "$SECRET_CONTENT" = "None" ]; then
-            echo "SecretString is empty for $APP_ENV_SECRET_ID"
-            exit 1
-          fi
-
-          NEXT_PUBLIC_POCKETBASE_URL="$(printf '%s\n' "$SECRET_CONTENT" | awk -F= '/^NEXT_PUBLIC_POCKETBASE_URL=/{sub(/^[^=]*=/,""); print; exit}')"
-          NEXT_PUBLIC_PB_URL="$(printf '%s\n' "$SECRET_CONTENT" | awk -F= '/^NEXT_PUBLIC_PB_URL=/{sub(/^[^=]*=/,""); print; exit}')"
-          NEXT_PUBLIC_COMPANY_DOMAIN="$(printf '%s\n' "$SECRET_CONTENT" | awk -F= '/^NEXT_PUBLIC_COMPANY_DOMAIN=/{sub(/^[^=]*=/,""); print; exit}')"
-          NEXT_PUBLIC_AUTH_MODE="$(printf '%s\n' "$SECRET_CONTENT" | awk -F= '/^NEXT_PUBLIC_AUTH_MODE=/{sub(/^[^=]*=/,""); print; exit}')"
-
           if [ -z "$NEXT_PUBLIC_POCKETBASE_URL" ] && [ -z "$NEXT_PUBLIC_PB_URL" ]; then
-            echo "Missing NEXT_PUBLIC_POCKETBASE_URL (or NEXT_PUBLIC_PB_URL) in secret $APP_ENV_SECRET_ID"
+            echo "Missing NEXT_PUBLIC_POCKETBASE_URL (or NEXT_PUBLIC_PB_URL) in GitHub variables"
             exit 1
           fi
           if [ -z "$NEXT_PUBLIC_COMPANY_DOMAIN" ]; then
-            echo "Missing NEXT_PUBLIC_COMPANY_DOMAIN in secret $APP_ENV_SECRET_ID"
+            echo "Missing NEXT_PUBLIC_COMPANY_DOMAIN in GitHub variables"
             exit 1
           fi
           if [ -z "$NEXT_PUBLIC_AUTH_MODE" ]; then
@@ -154,40 +137,30 @@ jobs:
           EC2_HOST: ${{ secrets.EC2_HOST }}
           EC2_PORT: ${{ secrets.EC2_PORT || '22' }}
           AWS_REGION: ${{ vars.AWS_REGION || 'us-east-1' }}
-          APP_ENV_SECRET_ID: ${{ vars.APP_ENV_SECRET_ID }}
           ECR_REGISTRY: ${{ needs.build-and-push.outputs.ecr_registry }}
           IMAGE_URI: ${{ needs.build-and-push.outputs.image_uri }}
           CONTAINER_NAME: ${{ vars.APP_CONTAINER_NAME || 'prompit-web' }}
-          ENV_FILE: ${{ secrets.EC2_ENV_FILE || '/home/ubuntu/.env.prompit' }}
           HOST_PORT: ${{ vars.APP_HOST_PORT || '3001' }}
           CONTAINER_PORT: ${{ vars.APP_CONTAINER_PORT || '3001' }}
         run: |
           ssh -p "$EC2_PORT" "ubuntu@$EC2_HOST" /bin/bash -s -- \
             "$AWS_REGION" \
-            "$APP_ENV_SECRET_ID" \
             "$ECR_REGISTRY" \
             "$IMAGE_URI" \
             "$CONTAINER_NAME" \
-            "$ENV_FILE" \
             "$HOST_PORT" \
             "$CONTAINER_PORT" <<'REMOTE_SCRIPT'
           set -euo pipefail
 
           REGION_RAW="${1:-us-east-1}"
-          APP_ENV_SECRET_ID="${2:-}"
-          ECR_REGISTRY="${3:-}"
-          IMAGE_URI="${4:-}"
-          CONTAINER_NAME="${5:-prompit-web}"
-          ENV_FILE_PATH="${6:-/home/ubuntu/.env.prompit}"
-          HOST_PORT="${7:-3001}"
-          CONTAINER_PORT="${8:-3001}"
+          ECR_REGISTRY="${2:-}"
+          IMAGE_URI="${3:-}"
+          CONTAINER_NAME="${4:-prompit-web}"
+          HOST_PORT="${5:-3001}"
+          CONTAINER_PORT="${6:-3001}"
 
           if ! command -v aws >/dev/null 2>&1; then
             echo 'aws cli not found on EC2 host. Install awscli and attach IAM permissions for ECR pull.'
-            exit 1
-          fi
-          if [ -z "$APP_ENV_SECRET_ID" ]; then
-            echo 'APP_ENV_SECRET_ID is empty. Set it as a GitHub Actions variable.'
             exit 1
           fi
           if [ -z "$IMAGE_URI" ]; then
@@ -201,30 +174,6 @@ jobs:
             exit 1
           fi
           echo "Using AWS region: $REGION"
-          echo "Using ENV_FILE_PATH=$ENV_FILE_PATH"
-
-          ENV_DIR="$(dirname "$ENV_FILE_PATH")"
-          if ! mkdir -p "$ENV_DIR" 2>/dev/null; then
-            sudo mkdir -p "$ENV_DIR"
-            sudo chown "$(id -u):$(id -g)" "$ENV_DIR"
-          fi
-
-          SECRET_CONTENT="$(aws secretsmanager get-secret-value \
-            --region "$REGION" \
-            --secret-id "$APP_ENV_SECRET_ID" \
-            --query 'SecretString' \
-            --output text)"
-
-          if [ -z "$SECRET_CONTENT" ] || [ "$SECRET_CONTENT" = "None" ]; then
-            echo 'Retrieved empty SecretString. Check APP_ENV_SECRET_ID and secret value.'
-            exit 1
-          fi
-
-          if ! printf '%s\n' "$SECRET_CONTENT" > "$ENV_FILE_PATH" 2>/dev/null; then
-            printf '%s\n' "$SECRET_CONTENT" | sudo tee "$ENV_FILE_PATH" >/dev/null
-            sudo chown "$(id -u):$(id -g)" "$ENV_FILE_PATH"
-          fi
-          chmod 600 "$ENV_FILE_PATH"
 
           TMP_DOCKER_CONFIG="$(mktemp -d)"
           export DOCKER_CONFIG="$TMP_DOCKER_CONFIG"
@@ -240,8 +189,6 @@ jobs:
           docker run -d \
             --name "$CONTAINER_NAME" \
             --restart unless-stopped \
-            --env-file "$ENV_FILE_PATH" \
-            -v "$ENV_FILE_PATH:/app/.env:ro" \
             -p "$HOST_PORT:$CONTAINER_PORT" \
             "$IMAGE_URI"
 
