@@ -120,7 +120,7 @@ jobs:
           ECR_REGISTRY: ${{ needs.build-and-push.outputs.ecr_registry }}
           IMAGE_URI: ${{ needs.build-and-push.outputs.image_uri }}
           CONTAINER_NAME: ${{ vars.APP_CONTAINER_NAME || 'prompit-web' }}
-          ENV_FILE: ${{ secrets.EC2_ENV_FILE || '/opt/prompit/.env.prompit' }}
+          ENV_FILE: ${{ secrets.EC2_ENV_FILE || '/home/ubuntu/.env.prompit' }}
           HOST_PORT: ${{ vars.APP_HOST_PORT || '3001' }}
           CONTAINER_PORT: ${{ vars.APP_CONTAINER_PORT || '3001' }}
         run: |
@@ -139,7 +139,12 @@ jobs:
               exit 1
             fi
 
-            ENV_DIR=\"$(dirname '$ENV_FILE')\"
+            ENV_FILE_PATH='$ENV_FILE'
+            if [ -z \"$ENV_FILE_PATH\" ]; then
+              echo 'ENV_FILE is empty.'
+              exit 1
+            fi
+            ENV_DIR=\"$(dirname \"$ENV_FILE_PATH\")\"
             if ! mkdir -p \"$ENV_DIR\" 2>/dev/null; then
               sudo mkdir -p \"$ENV_DIR\"
               sudo chown \"$(id -u):$(id -g)\" \"$ENV_DIR\"
@@ -158,11 +163,11 @@ jobs:
               exit 1
             fi
 
-            if ! mv \"$TMP_ENV_FILE\" '$ENV_FILE' 2>/dev/null; then
-              sudo mv \"$TMP_ENV_FILE\" '$ENV_FILE'
-              sudo chown \"$(id -u):$(id -g)\" '$ENV_FILE'
+            if ! mv \"$TMP_ENV_FILE\" \"$ENV_FILE_PATH\" 2>/dev/null; then
+              sudo mv \"$TMP_ENV_FILE\" \"$ENV_FILE_PATH\"
+              sudo chown \"$(id -u):$(id -g)\" \"$ENV_FILE_PATH\"
             fi
-            chmod 600 '$ENV_FILE'
+            chmod 600 \"$ENV_FILE_PATH\"
 
             aws ecr get-login-password --region '$AWS_REGION' | docker login --username AWS --password-stdin '$ECR_REGISTRY'
 
@@ -175,8 +180,8 @@ jobs:
             docker run -d \
               --name '$CONTAINER_NAME' \
               --restart unless-stopped \
-              --env-file '$ENV_FILE' \
-              -v '$ENV_FILE:/app/.env:ro' \
+              --env-file \"$ENV_FILE_PATH\" \
+              -v \"$ENV_FILE_PATH:/app/.env:ro\" \
               -p '$HOST_PORT:$CONTAINER_PORT' \
               '$IMAGE_URI'
 
