@@ -497,12 +497,9 @@ export function PromptHub() {
         <section className="rounded-2xl border border-slate-200 bg-white p-8 text-center shadow-sm dark:border-slate-700 dark:bg-slate-900">
           {env.authMode === "email" ? (
             <>
-              <div className="mx-auto mb-3 inline-flex rounded-full bg-amber-100 px-3 py-1 text-xs font-semibold uppercase tracking-wide text-amber-800">
-                Dev Auth Mode: Email
-              </div>
-              <h2 className="text-xl font-semibold dark:text-slate-50">Sign in with email (local dev)</h2>
+              <h2 className="text-xl font-semibold dark:text-slate-50">Sign in with email</h2>
               <p className="mt-2 text-sm text-slate-600 dark:text-slate-300">
-                Use a whitelisted account. Access is restricted to @{env.companyDomain} users.
+                Use your company account. Access is restricted to @{env.companyDomain} users.
               </p>
               <form onSubmit={signInWithEmailPassword} className="mx-auto mt-5 max-w-sm space-y-3 text-left">
                 <div>
