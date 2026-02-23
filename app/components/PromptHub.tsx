@@ -498,7 +498,7 @@ export function PromptHub() {
             <>
               <h2 className="text-xl font-semibold dark:text-slate-50">Sign in with email</h2>
               <p className="mt-2 text-sm text-slate-600 dark:text-slate-300">
-                Use your company account. Access is restricted to @{env.companyDomain} users.
+                Use your MIT email. Access is restricted to @{env.companyDomain} users.
               </p>
               <form onSubmit={signInWithEmailPassword} className="mx-auto mt-5 max-w-sm space-y-3 text-left">
                 <div>
