@@ -151,21 +151,19 @@ jobs:
               sudo chown \"$(id -u):$(id -g)\" \"$ENV_DIR\"
             fi
 
-            TMP_ENV_FILE=\"$(mktemp)\"
-            aws secretsmanager get-secret-value \
+            SECRET_CONTENT=\"$(aws secretsmanager get-secret-value \
               --region '$AWS_REGION' \
               --secret-id '$APP_ENV_SECRET_ID' \
               --query 'SecretString' \
-              --output text > \"$TMP_ENV_FILE\"
+              --output text)\"
 
-            if [ ! -s \"$TMP_ENV_FILE\" ]; then
+            if [ -z \"$SECRET_CONTENT\" ] || [ \"$SECRET_CONTENT\" = \"None\" ]; then
               echo 'Retrieved empty SecretString. Check APP_ENV_SECRET_ID and secret value.'
-              rm -f \"$TMP_ENV_FILE\"
               exit 1
             fi
 
-            if ! mv \"$TMP_ENV_FILE\" \"$ENV_FILE_PATH\" 2>/dev/null; then
-              sudo mv \"$TMP_ENV_FILE\" \"$ENV_FILE_PATH\"
+            if ! printf '%s\n' \"$SECRET_CONTENT\" > \"$ENV_FILE_PATH\" 2>/dev/null; then
+              printf '%s\n' \"$SECRET_CONTENT\" | sudo tee \"$ENV_FILE_PATH\" >/dev/null
               sudo chown \"$(id -u):$(id -g)\" \"$ENV_FILE_PATH\"
             fi
             chmod 600 \"$ENV_FILE_PATH\"
