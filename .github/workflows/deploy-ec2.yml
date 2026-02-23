@@ -188,6 +188,10 @@ jobs:
           fi
           chmod 600 "$ENV_FILE_PATH"
 
+          TMP_DOCKER_CONFIG="$(mktemp -d)"
+          export DOCKER_CONFIG="$TMP_DOCKER_CONFIG"
+          trap 'rm -rf "$TMP_DOCKER_CONFIG"' EXIT
+
           aws ecr get-login-password --region "$REGION" | docker login --username AWS --password-stdin "$ECR_REGISTRY"
           docker pull "$IMAGE_URI"
 
