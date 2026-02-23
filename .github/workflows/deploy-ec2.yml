@@ -139,11 +139,12 @@ jobs:
               exit 1
             fi
 
-            ENV_FILE_PATH='$ENV_FILE'
+            ENV_FILE_PATH='${ENV_FILE:-/home/ubuntu/.env.prompit}'
             if [ -z \"$ENV_FILE_PATH\" ]; then
               echo 'ENV_FILE is empty.'
               exit 1
             fi
+            echo \"Using ENV_FILE_PATH=$ENV_FILE_PATH\"
             ENV_DIR=\"$(dirname \"$ENV_FILE_PATH\")\"
             if ! mkdir -p \"$ENV_DIR\" 2>/dev/null; then
               sudo mkdir -p \"$ENV_DIR\"
