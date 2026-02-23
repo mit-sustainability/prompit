@@ -124,73 +124,84 @@ jobs:
           HOST_PORT: ${{ vars.APP_HOST_PORT || '3001' }}
           CONTAINER_PORT: ${{ vars.APP_CONTAINER_PORT || '3001' }}
         run: |
-          ssh -p "$EC2_PORT" "ubuntu@$EC2_HOST" "
-            set -euo pipefail
-            if ! command -v aws >/dev/null 2>&1; then
-              echo 'aws cli not found on EC2 host. Install awscli and attach IAM permissions for ECR pull.'
-              exit 1
-            fi
-            if [ -z '$APP_ENV_SECRET_ID' ]; then
-              echo 'APP_ENV_SECRET_ID is empty. Set it as a GitHub Actions variable.'
-              exit 1
-            fi
-            if [ -z '$IMAGE_URI' ]; then
-              echo 'IMAGE_URI is empty. Build job did not produce image URI.'
-              exit 1
-            fi
+          ssh -p "$EC2_PORT" "ubuntu@$EC2_HOST" /bin/bash -s -- \
+            "$AWS_REGION" \
+            "$APP_ENV_SECRET_ID" \
+            "$ECR_REGISTRY" \
+            "$IMAGE_URI" \
+            "$CONTAINER_NAME" \
+            "$ENV_FILE" \
+            "$HOST_PORT" \
+            "$CONTAINER_PORT" <<'REMOTE_SCRIPT'
+          set -euo pipefail
 
-            REGION_RAW='${AWS_REGION:-us-east-1}'
-            REGION=\"$(printf '%s' \"$REGION_RAW\" | sed 's/^\"//; s/\"$//')\"
-            if [ -z \"$REGION\" ]; then
-              echo 'AWS_REGION resolved to empty value.'
-              exit 1
-            fi
-            echo \"Using AWS region: $REGION\"
+          REGION_RAW="${1:-us-east-1}"
+          APP_ENV_SECRET_ID="${2:-}"
+          ECR_REGISTRY="${3:-}"
+          IMAGE_URI="${4:-}"
+          CONTAINER_NAME="${5:-prompit-web}"
+          ENV_FILE_PATH="${6:-/home/ubuntu/.env.prompit}"
+          HOST_PORT="${7:-3001}"
+          CONTAINER_PORT="${8:-3001}"
 
-            ENV_FILE_PATH='${ENV_FILE:-/home/ubuntu/.env.prompit}'
-            if [ -z \"$ENV_FILE_PATH\" ]; then
-              echo 'ENV_FILE is empty.'
-              exit 1
-            fi
-            echo \"Using ENV_FILE_PATH=$ENV_FILE_PATH\"
-            ENV_DIR=\"$(dirname \"$ENV_FILE_PATH\")\"
-            if ! mkdir -p \"$ENV_DIR\" 2>/dev/null; then
-              sudo mkdir -p \"$ENV_DIR\"
-              sudo chown \"$(id -u):$(id -g)\" \"$ENV_DIR\"
-            fi
+          if ! command -v aws >/dev/null 2>&1; then
+            echo 'aws cli not found on EC2 host. Install awscli and attach IAM permissions for ECR pull.'
+            exit 1
+          fi
+          if [ -z "$APP_ENV_SECRET_ID" ]; then
+            echo 'APP_ENV_SECRET_ID is empty. Set it as a GitHub Actions variable.'
+            exit 1
+          fi
+          if [ -z "$IMAGE_URI" ]; then
+            echo 'IMAGE_URI is empty. Build job did not produce image URI.'
+            exit 1
+          fi
 
-            SECRET_CONTENT=\"$(aws secretsmanager get-secret-value \
-              --region \"$REGION\" \
-              --secret-id '$APP_ENV_SECRET_ID' \
-              --query 'SecretString' \
-              --output text)\"
+          REGION="$(printf '%s' "$REGION_RAW" | sed "s/^\"//; s/\"$//")"
+          if [ -z "$REGION" ]; then
+            echo "AWS_REGION resolved to empty value. REGION_RAW=$REGION_RAW"
+            exit 1
+          fi
+          echo "Using AWS region: $REGION"
+          echo "Using ENV_FILE_PATH=$ENV_FILE_PATH"
 
-            if [ -z \"$SECRET_CONTENT\" ] || [ \"$SECRET_CONTENT\" = \"None\" ]; then
-              echo 'Retrieved empty SecretString. Check APP_ENV_SECRET_ID and secret value.'
-              exit 1
-            fi
+          ENV_DIR="$(dirname "$ENV_FILE_PATH")"
+          if ! mkdir -p "$ENV_DIR" 2>/dev/null; then
+            sudo mkdir -p "$ENV_DIR"
+            sudo chown "$(id -u):$(id -g)" "$ENV_DIR"
+          fi
 
-            if ! printf '%s\n' \"$SECRET_CONTENT\" > \"$ENV_FILE_PATH\" 2>/dev/null; then
-              printf '%s\n' \"$SECRET_CONTENT\" | sudo tee \"$ENV_FILE_PATH\" >/dev/null
-              sudo chown \"$(id -u):$(id -g)\" \"$ENV_FILE_PATH\"
-            fi
-            chmod 600 \"$ENV_FILE_PATH\"
+          SECRET_CONTENT="$(aws secretsmanager get-secret-value \
+            --region "$REGION" \
+            --secret-id "$APP_ENV_SECRET_ID" \
+            --query 'SecretString' \
+            --output text)"
 
-            aws ecr get-login-password --region \"$REGION\" | docker login --username AWS --password-stdin '$ECR_REGISTRY'
+          if [ -z "$SECRET_CONTENT" ] || [ "$SECRET_CONTENT" = "None" ]; then
+            echo 'Retrieved empty SecretString. Check APP_ENV_SECRET_ID and secret value.'
+            exit 1
+          fi
 
-            docker pull '$IMAGE_URI'
+          if ! printf '%s\n' "$SECRET_CONTENT" > "$ENV_FILE_PATH" 2>/dev/null; then
+            printf '%s\n' "$SECRET_CONTENT" | sudo tee "$ENV_FILE_PATH" >/dev/null
+            sudo chown "$(id -u):$(id -g)" "$ENV_FILE_PATH"
+          fi
+          chmod 600 "$ENV_FILE_PATH"
 
-            if docker ps -a --format '{{.Names}}' | grep -Fxq '$CONTAINER_NAME'; then
-              docker rm -f '$CONTAINER_NAME'
-            fi
+          aws ecr get-login-password --region "$REGION" | docker login --username AWS --password-stdin "$ECR_REGISTRY"
+          docker pull "$IMAGE_URI"
 
-            docker run -d \
-              --name '$CONTAINER_NAME' \
-              --restart unless-stopped \
-              --env-file \"$ENV_FILE_PATH\" \
-              -v \"$ENV_FILE_PATH:/app/.env:ro\" \
-              -p '$HOST_PORT:$CONTAINER_PORT' \
-              '$IMAGE_URI'
+          if docker ps -a --format '{{.Names}}' | grep -Fxq "$CONTAINER_NAME"; then
+            docker rm -f "$CONTAINER_NAME"
+          fi
 
-            docker image prune -f
-          "
+          docker run -d \
+            --name "$CONTAINER_NAME" \
+            --restart unless-stopped \
+            --env-file "$ENV_FILE_PATH" \
+            -v "$ENV_FILE_PATH:/app/.env:ro" \
+            -p "$HOST_PORT:$CONTAINER_PORT" \
+            "$IMAGE_URI"
+
+          docker image prune -f
+          REMOTE_SCRIPT
