@@ -14,6 +14,21 @@ on:
       - "next.config.mjs"
       - "Dockerfile"
       - ".github/workflows/deploy-ec2.yml"
+  pull_request:
+    branches:
+      - main
+    types:
+      - closed
+    paths:
+      - "app/**"
+      - "lib/**"
+      - "public/**"
+      - "scripts/**"
+      - "package.json"
+      - "package-lock.json"
+      - "next.config.mjs"
+      - "Dockerfile"
+      - ".github/workflows/deploy-ec2.yml"
   workflow_dispatch:
 
 concurrency:
@@ -24,6 +39,9 @@ jobs:
   build-and-push:
     name: Build and push to ECR
     runs-on: ubuntu-latest
+    if: |
+      github.event_name == 'push' ||
+      (github.event_name == 'pull_request' && github.event.pull_request.merged == true)
     environment: production
     permissions:
       id-token: write
