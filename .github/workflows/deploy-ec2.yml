@@ -75,6 +75,14 @@ jobs:
         run: |
           echo "image_tag=${GITHUB_SHA}" >> "$GITHUB_OUTPUT"
 
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+        with:
+          platforms: arm64
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
       - name: Build and push image
         id: build
         env:
@@ -106,16 +114,16 @@ jobs:
             NEXT_PUBLIC_AUTH_MODE="google"
           fi
 
-          docker build \
+          docker buildx build \
+            --platform linux/arm64 \
             --build-arg NEXT_PUBLIC_POCKETBASE_URL="$NEXT_PUBLIC_POCKETBASE_URL" \
             --build-arg NEXT_PUBLIC_PB_URL="$NEXT_PUBLIC_PB_URL" \
             --build-arg NEXT_PUBLIC_COMPANY_DOMAIN="$NEXT_PUBLIC_COMPANY_DOMAIN" \
             --build-arg NEXT_PUBLIC_AUTH_MODE="$NEXT_PUBLIC_AUTH_MODE" \
-            -t "$IMAGE_URI" -f Dockerfile .
-          docker tag "$IMAGE_URI" "$IMAGE_URI_STABLE"
-
-          docker push "$IMAGE_URI"
-          docker push "$IMAGE_URI_STABLE"
+            -t "$IMAGE_URI" \
+            -t "$IMAGE_URI_STABLE" \
+            --push \
+            -f Dockerfile .
 
           echo "image_uri=$IMAGE_URI" >> "$GITHUB_OUTPUT"
 
@@ -160,6 +168,10 @@ jobs:
           CONTAINER_NAME: ${{ vars.APP_CONTAINER_NAME || 'prompit-web' }}
           HOST_PORT: ${{ vars.APP_HOST_PORT || '3001' }}
           CONTAINER_PORT: ${{ vars.APP_CONTAINER_PORT || '3001' }}
+          NEXT_PUBLIC_POCKETBASE_URL: ${{ vars.NEXT_PUBLIC_POCKETBASE_URL }}
+          NEXT_PUBLIC_PB_URL: ${{ vars.NEXT_PUBLIC_PB_URL }}
+          NEXT_PUBLIC_COMPANY_DOMAIN: ${{ vars.NEXT_PUBLIC_COMPANY_DOMAIN }}
+          NEXT_PUBLIC_AUTH_MODE: ${{ vars.NEXT_PUBLIC_AUTH_MODE || 'google' }}
         run: |
           ssh -p "$EC2_PORT" "ubuntu@$EC2_HOST" /bin/bash -s -- \
             "$AWS_REGION" \
@@ -167,7 +179,11 @@ jobs:
             "$IMAGE_URI" \
             "$CONTAINER_NAME" \
             "$HOST_PORT" \
-            "$CONTAINER_PORT" <<'REMOTE_SCRIPT'
+            "$CONTAINER_PORT" \
+            "$NEXT_PUBLIC_POCKETBASE_URL" \
+            "$NEXT_PUBLIC_PB_URL" \
+            "$NEXT_PUBLIC_COMPANY_DOMAIN" \
+            "$NEXT_PUBLIC_AUTH_MODE" <<'REMOTE_SCRIPT'
           set -euo pipefail
 
           REGION_RAW="${1:-us-east-1}"
@@ -176,6 +192,10 @@ jobs:
           CONTAINER_NAME="${4:-prompit-web}"
           HOST_PORT="${5:-3001}"
           CONTAINER_PORT="${6:-3001}"
+          NEXT_PUBLIC_POCKETBASE_URL="${7:-}"
+          NEXT_PUBLIC_PB_URL="${8:-}"
+          NEXT_PUBLIC_COMPANY_DOMAIN="${9:-}"
+          NEXT_PUBLIC_AUTH_MODE="${10:-google}"
 
           if ! command -v aws >/dev/null 2>&1; then
             echo 'aws cli not found on EC2 host. Install awscli and attach IAM permissions for ECR pull.'
@@ -185,6 +205,14 @@ jobs:
             echo 'IMAGE_URI is empty. Build job did not produce image URI.'
             exit 1
           fi
+          if [ -z "$NEXT_PUBLIC_POCKETBASE_URL" ] && [ -z "$NEXT_PUBLIC_PB_URL" ]; then
+            echo 'Missing NEXT_PUBLIC_POCKETBASE_URL (or NEXT_PUBLIC_PB_URL) in deploy job.'
+            exit 1
+          fi
+          if [ -z "$NEXT_PUBLIC_COMPANY_DOMAIN" ]; then
+            echo 'Missing NEXT_PUBLIC_COMPANY_DOMAIN in deploy job.'
+            exit 1
+          fi
 
           REGION="$(printf '%s' "$REGION_RAW" | sed "s/^\"//; s/\"$//")"
           if [ -z "$REGION" ]; then
@@ -192,6 +220,8 @@ jobs:
             exit 1
           fi
           echo "Using AWS region: $REGION"
+          echo "Deploying image: $IMAGE_URI"
+          echo "Effective PocketBase URL: ${NEXT_PUBLIC_POCKETBASE_URL:-$NEXT_PUBLIC_PB_URL}"
 
           TMP_DOCKER_CONFIG="$(mktemp -d)"
           export DOCKER_CONFIG="$TMP_DOCKER_CONFIG"
@@ -207,6 +237,10 @@ jobs:
           docker run -d \
             --name "$CONTAINER_NAME" \
             --restart unless-stopped \
+            -e NEXT_PUBLIC_POCKETBASE_URL="$NEXT_PUBLIC_POCKETBASE_URL" \
+            -e NEXT_PUBLIC_PB_URL="$NEXT_PUBLIC_PB_URL" \
+            -e NEXT_PUBLIC_COMPANY_DOMAIN="$NEXT_PUBLIC_COMPANY_DOMAIN" \
+            -e NEXT_PUBLIC_AUTH_MODE="$NEXT_PUBLIC_AUTH_MODE" \
             -p "$HOST_PORT:$CONTAINER_PORT" \
             "$IMAGE_URI"
 
