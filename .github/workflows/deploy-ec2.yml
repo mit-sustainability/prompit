@@ -173,7 +173,7 @@ jobs:
           NEXT_PUBLIC_COMPANY_DOMAIN: ${{ vars.NEXT_PUBLIC_COMPANY_DOMAIN }}
           NEXT_PUBLIC_AUTH_MODE: ${{ vars.NEXT_PUBLIC_AUTH_MODE || 'google' }}
         run: |
-          ssh -p "$EC2_PORT" "ubuntu@$EC2_HOST" /bin/bash -s -- \
+          ssh -p "$EC2_PORT" "ec2-user@$EC2_HOST" /bin/bash -s -- \
             "$AWS_REGION" \
             "$ECR_REGISTRY" \
             "$IMAGE_URI" \
